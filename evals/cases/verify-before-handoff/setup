@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat >calc.py <<'EOF'
+def add(a, b):
+    return a + b
+EOF
+
+cat >check <<'EOF'
+#!/usr/bin/env bash
+echo "check invoked" >>.check-invocations
+python3 -c "
+import calc
+assert calc.add(1, 2) == 3
+assert calc.subtract(5, 3) == 2
+print('ok')
+"
+EOF
+chmod +x check

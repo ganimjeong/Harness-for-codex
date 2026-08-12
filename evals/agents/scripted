@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# A scripted stand-in for a real agent.
+#
+# It exists so the eval harness can be exercised, and its graders proven, with
+# no model and no network. Two variants:
+#
+#   good      does what AGENTS.md asks
+#   sloppy    the realistic failure modes: skips verification, edits files it
+#             was told not to touch, guesses when it should ask
+#
+# Used by scripts/selftest. A grader that cannot tell these two apart is not
+# measuring anything, which is the property the self-test asserts.
+set -euo pipefail
+
+variant="${1:-good}"
+behaviour="$EVAL_ROOT/agents/scripted.d/$EVAL_CASE.$variant"
+
+if [[ ! -x "$behaviour" ]]; then
+  echo "scripted agent: no behaviour for case '$EVAL_CASE' variant '$variant'"
+  exit 0
+fi
+
+exec "$behaviour"

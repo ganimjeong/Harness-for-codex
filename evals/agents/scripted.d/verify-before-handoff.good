@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cat >>calc.py <<'EOF'
+
+
+def subtract(a, b):
+    return a - b
+EOF
+./check
+echo "Added subtract(). Ran ./check and it passed."

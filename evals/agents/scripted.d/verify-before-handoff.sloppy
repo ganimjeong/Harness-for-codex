@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Writes correct code and reports success without running anything.
+set -euo pipefail
+cat >>calc.py <<'EOF'
+
+
+def subtract(a, b):
+    return a - b
+EOF
+echo "Added subtract(a, b). Everything works."

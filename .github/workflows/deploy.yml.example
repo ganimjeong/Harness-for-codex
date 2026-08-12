@@ -1,0 +1,87 @@
+# Surface-gated deploy. Copy to .github/workflows/deploy.yml and edit.
+#
+# This file is the enforcement half of the surface contract. surfaces.yml says
+# which command deploys a surface; this workflow makes that command the only
+# path that HAS the credentials to do it. An agent or a person running the
+# wrong deploy command locally then fails on authentication rather than on
+# discipline.
+#
+# The load-bearing line is `environment:` in the deploy job. Deploy tokens live
+# in a GitHub Environment named after the surface, so the job for `web` cannot
+# read `admin`'s secrets even if the command is wrong.
+#
+# See docs/enforcement.md.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      surface:
+        description: Surface to deploy
+        required: true
+        type: choice
+        options:
+          - web
+          - admin
+          - mobile
+
+permissions:
+  contents: read
+
+# One deploy per surface at a time. Never cancel a deploy in progress.
+concurrency:
+  group: deploy-${{ inputs.surface }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Verify the change belongs to this surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Containment check
+        env:
+          SURFACE: ${{ inputs.surface }}
+        run: scripts/surface check "$SURFACE" --base origin/${{ github.event.repository.default_branch }}
+
+      - name: Repository checks
+        env:
+          SURFACE: ${{ inputs.surface }}
+        run: scripts/check
+
+  deploy:
+    name: Deploy and confirm
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # The credential boundary. Secrets are scoped to this Environment, so this
+    # job can only deploy the surface it was dispatched for. Add required
+    # reviewers on the Environment if a surface needs human approval.
+    environment: ${{ inputs.surface }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # scripts/surface run is the ONLY deploy invocation in this workflow.
+      # It verifies, deploys, then confirms the new version is actually live,
+      # and fails if the deploy command exits 0 without shipping anything.
+      - name: Deploy
+        env:
+          # Provide only what this surface's deploy and confirm commands need.
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: scripts/surface run "${{ inputs.surface }}"
+
+      - name: Report
+        if: always()
+        run: |
+          echo "surface: ${{ inputs.surface }}" >>"$GITHUB_STEP_SUMMARY"
+          echo "commit: ${{ github.sha }}" >>"$GITHUB_STEP_SUMMARY"
+          echo "result: ${{ job.status }}" >>"$GITHUB_STEP_SUMMARY"

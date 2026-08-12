@@ -5,6 +5,11 @@ cd "$(dirname "$0")/.."
 
 ran=0
 
+if [[ -n "${SURFACE:-}" ]]; then
+  scripts/surface check "$SURFACE"
+  ran=1
+fi
+
 if [[ -f package.json ]]; then
   if npm run | grep -qE '^  lint$'; then
     npm run lint

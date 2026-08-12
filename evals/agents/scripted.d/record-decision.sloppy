@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Does the work, ignores the instruction that the choice must be recorded.
+set -euo pipefail
+python3 - <<'EOF'
+src = open("log.py").read().replace(
+    'return f"{when} {message}"',
+    'return f"{when:%d/%m/%Y} {message}"',
+)
+open("log.py", "w").write(src)
+EOF
+echo "Log lines now use DD/MM/YYYY."

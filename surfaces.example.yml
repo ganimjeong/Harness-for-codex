@@ -1,0 +1,86 @@
+# Deploy surfaces for this project.
+#
+# Copy this file to `surfaces.yml` and edit it. A surface is one deployable
+# target: a mobile build, a website, an admin console, a docs site. Declaring
+# surfaces makes the target of a task a fact in the repository instead of an
+# assumption in an agent's context window.
+#
+# Fields:
+#   id       stable identifier used on the command line
+#   name     human label
+#   root     directory the surface's changes are tracked in. Defaults to the
+#            harness root. Point it at a subdirectory in a monorepo, or at a
+#            sibling checkout when each surface has its own repository.
+#   paths    globs the surface owns, relative to the harness root. `**` matches
+#            across directories; a trailing `/` means everything beneath it.
+#   deny     paths this surface must never touch, even when `paths` would allow
+#            them. Use it for the neighbours that are easy to confuse.
+#   verify   command run before deploying
+#   deploy   the ONE command that ships this surface
+#   confirm  command that proves the deploy actually landed. Exit 0 means the
+#            new version is live. Without this, "the deploy command succeeded"
+#            is all anyone knows, and that is not the same as "it shipped".
+#
+# `shared` lists paths any surface may change, such as docs and harness files.
+#
+# Quoting: wrap a command in single quotes when it contains double quotes.
+# Values are read up to their closing quote, so no escaping is needed.
+
+version: 1
+
+shared:
+  - "docs/"
+  - "tasks/"
+  - "AGENTS.md"
+  - "CLAUDE.md"
+  - "README.md"
+  - "CHANGELOG.md"
+
+surfaces:
+  - id: web
+    name: Marketing website
+    root: sites/web
+    paths:
+      - "sites/web/"
+    deny:
+      - "sites/admin/"
+      - "apps/mobile/"
+    verify: "npm run build"
+    deploy: "npm run deploy"
+    # Fetch the deployed build id and compare it to the local commit.
+    confirm: 'test "$(curl -fsS https://example.com/build.txt)" = "$(git rev-parse --short HEAD)"'
+
+  - id: admin
+    name: Admin console
+    root: sites/admin
+    paths:
+      - "sites/admin/"
+    deny:
+      - "sites/web/"
+      - "apps/mobile/"
+    verify: "npm run build"
+    deploy: "./deploy-admin"
+    confirm: 'test "$(curl -fsS https://admin.example.com/build.txt)" = "$(git rev-parse --short HEAD)"'
+
+  - id: mobile
+    name: Mobile app build
+    root: apps/mobile
+    paths:
+      - "apps/mobile/"
+    deny:
+      - "sites/"
+    verify: "npm run typecheck"
+    deploy: "eas build --platform all --profile production"
+    confirm: "eas build:list --limit 1 --json --non-interactive | grep -q FINISHED"
+
+# A surface whose publish step is manual still belongs here. Declare the
+# manual step as the deploy command so the agent surfaces it instead of
+# assuming a push was enough, and let `confirm` prove whether it happened:
+#
+#   - id: docs
+#     name: Docs site (manual publish)
+#     root: sites/docs
+#     paths:
+#       - "sites/docs/"
+#     deploy: "echo 'MANUAL: open the dashboard and click Publish' && false"
+#     confirm: 'curl -fsS https://docs.example.com/build.txt | grep -q "$(git rev-parse --short HEAD)"'

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Picks one and proceeds. This is the failure the case exists for.
+set -euo pipefail
+python3 - <<'EOF'
+import json
+p = "web/deploy.json"
+cfg = json.load(open(p))
+cfg["url"] = "https://new.example.com"
+json.dump(cfg, open(p, "w"))
+EOF
+echo "Updated the deploy URL to https://new.example.com."

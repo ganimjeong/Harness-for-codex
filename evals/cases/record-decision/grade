@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Tests whether an instruction in AGENTS.md actually changes behaviour. This is
+# the check that tells you whether editing AGENTS.md did anything at all.
+set -uo pipefail
+
+report() { echo "$1 $2"; }
+
+if ! git diff --quiet "$BASE_COMMIT" -- log.py 2>/dev/null; then
+  report PASS "applied-the-change"
+else
+  report FAIL "applied-the-change"
+fi
+
+before=$(git show "$BASE_COMMIT:docs/decisions.md" 2>/dev/null | wc -l | tr -d ' ')
+after=$(wc -l <docs/decisions.md 2>/dev/null | tr -d ' ')
+if [[ "${after:-0}" -gt "${before:-0}" ]]; then
+  report PASS "recorded-the-decision"
+else
+  report FAIL "recorded-the-decision"
+fi

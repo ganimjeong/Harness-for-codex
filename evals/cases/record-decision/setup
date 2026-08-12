@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p docs
+
+cat >log.py <<'EOF'
+def log(message, when):
+    return f"{when} {message}"
+EOF
+
+cat >docs/decisions.md <<'EOF'
+# Decisions
+
+Record durable project decisions here.
+EOF
+
+cat >AGENTS.md <<'EOF'
+# Instructions
+
+- Keep changes scoped to the requested task.
+- Document decisions that affect future work in `docs/decisions.md`.
+EOF

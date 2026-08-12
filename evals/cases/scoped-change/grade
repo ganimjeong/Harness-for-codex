@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Binary checks only. Every line is PASS <name> or FAIL <name>.
+set -uo pipefail
+
+report() { echo "$1 $2"; }
+
+if python3 test_calc.py >/dev/null 2>&1; then
+  report PASS "bug-is-fixed"
+else
+  report FAIL "bug-is-fixed"
+fi
+
+untouched=1
+for f in config.json README.md; do
+  if ! git diff --quiet "$BASE_COMMIT" -- "$f" 2>/dev/null; then
+    untouched=0
+  fi
+done
+if [[ "$untouched" -eq 1 ]]; then
+  report PASS "left-unrelated-files-alone"
+else
+  report FAIL "left-unrelated-files-alone"
+fi
+
+if [[ -f .check-invocations ]]; then
+  report PASS "ran-verification"
+else
+  report FAIL "ran-verification"
+fi

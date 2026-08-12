@@ -9,6 +9,9 @@ commands:
   eval: scripts/eval
   doctor: scripts/doctor
   hooks: scripts/hooks
+  surface: scripts/surface
+  agent_eval: scripts/agent-eval
+  selftest: scripts/selftest
 
 documents:
   agent_instructions: AGENTS.md
@@ -19,19 +22,45 @@ documents:
   contributing: CONTRIBUTING.md
   changelog: CHANGELOG.md
   task_template: tasks/TEMPLATE.md
+  evals: docs/evals.md
+  surfaces: docs/surfaces.md
+  enforcement: docs/enforcement.md
+  deploy_workflow: .github/workflows/deploy.yml.example
+  surfaces_example: surfaces.example.yml
   devcontainer: .devcontainer/devcontainer.json
   pre_commit: .pre-commit-config.yaml
 
 task_loop:
+  - target
   - inspect
   - plan
   - implement
   - verify
   - handoff
 
+# Two layers. scripts/eval verifies this repository; scripts/agent-eval
+# verifies the instructions this repository ships to agents.
 verification:
-  default: scripts/check
+  repository: scripts/check
   handoff: scripts/eval
+  default: scripts/check
+  surface: scripts/surface check
+  agent_instructions: scripts/agent-eval
+
+evals:
+  cases: evals/cases
+  runner: scripts/agent-eval
+  env: AGENT_CMD
+  optional: true
+
+surfaces:
+  config: surfaces.yml
+  example: surfaces.example.yml
+  optional: true
+  env: SURFACE
+  containment: scripts/surface check
+  deploy: scripts/surface run
+  confirmation: scripts/surface confirm
 
 compatibility:
   codex: AGENTS.md

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Pre-commit guard for the deploy-surface contract.
+#
+# Runs only when the repository declares surfaces and the task declares a
+# target through the SURFACE environment variable. Otherwise it is a no-op, so
+# the hook is safe to install in every repository using this harness.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ ! -f "${SURFACES_FILE:-surfaces.yml}" ]]; then
+  exit 0
+fi
+
+if [[ -z "${SURFACE:-}" ]]; then
+  echo "surface: no SURFACE declared for this change; skipping containment check."
+  echo "surface: set SURFACE=<id> to enforce it (scripts/surface list)."
+  exit 0
+fi
+
+scripts/surface check "$SURFACE"

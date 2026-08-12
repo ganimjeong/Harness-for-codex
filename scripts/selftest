@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# Harness self-test. Two suites:
+#
+# 1. scripts/surface, exercised in a scratch git repository so the surface
+#    contract is verified by CI without imposing surfaces on this repository
+#    or on repositories adopting the harness.
+# 2. scripts/agent-eval, exercised with the scripted stand-in agent, so the
+#    graders are themselves tested: `good` must pass every case and `sloppy`
+#    must fail. A grader that cannot tell those apart measures nothing.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+failures=0
+
+pass() { echo "  ok: $1"; }
+fail() {
+  echo "  FAIL: $1" >&2
+  failures=$((failures + 1))
+}
+
+expect_ok() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then pass "$label"; else fail "$label"; fi
+}
+
+expect_fail() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then fail "$label"; else pass "$label"; fi
+}
+
+expect_contains() {
+  local label="$1" needle="$2" out
+  shift 2
+  # Capture first: the command under test may exit non-zero by design, and
+  # piping it directly would also expose it to SIGPIPE from `grep -q`.
+  out="$("$@" 2>&1 || true)"
+  if printf '%s\n' "$out" | grep -qF -- "$needle"; then pass "$label"; else fail "$label"; fi
+}
+
+expect_missing() {
+  local label="$1" needle="$2" out
+  shift 2
+  out="$("$@" 2>&1 || true)"
+  if printf '%s\n' "$out" | grep -qF -- "$needle"; then fail "$label"; else pass "$label"; fi
+}
+
+mkdir -p "$work/repo/scripts"
+cp "$ROOT/scripts/surface" "$work/repo/scripts/surface"
+cp "$ROOT/scripts/check" "$work/repo/scripts/check"
+cp "$ROOT/scripts/surface-precommit" "$work/repo/scripts/surface-precommit"
+cd "$work/repo"
+
+git init -q .
+git config user.email harness@example.com
+git config user.name harness
+
+echo "== no surfaces.yml =="
+expect_contains "no-config is a no-op" "declares no deploy surfaces" scripts/surface list
+
+cat >surfaces.yml <<'YAML'
+version: 1
+
+shared:
+  - "docs/"
+
+surfaces:
+  - id: website
+    name: Marketing website
+    paths:
+      - "web/"
+    deny:
+      - "admin/"
+    verify: "true"
+    deploy: "true"
+    confirm: "test -f web/.shipped"
+
+  - id: admin
+    name: Admin console
+    paths:
+      - "admin/"
+    deny:
+      - "web/"
+    verify: "true"
+    deploy: "touch admin/.shipped"
+    confirm: "test -f admin/.shipped"
+YAML
+
+mkdir -p web admin docs
+echo one >web/index.html
+echo two >admin/index.html
+echo three >docs/notes.md
+git add -A
+git commit -qm base
+
+echo
+echo "== parsing =="
+expect_contains "list shows website" "Marketing website" scripts/surface list
+expect_contains "list shows admin" "Admin console" scripts/surface list
+expect_contains "show prints root" "root:" scripts/surface show website
+expect_contains "show prints deny" "admin/" scripts/surface show website
+expect_contains "plan numbers three steps" "3. Confirm:" scripts/surface plan website
+expect_contains "plan points at run" "scripts/surface run website" scripts/surface plan website
+expect_fail "unknown surface rejected" scripts/surface show nope
+expect_contains "unknown surface names known ids" "Known:" scripts/surface show nope
+
+echo
+echo "== clean tree =="
+expect_ok "clean tree passes" scripts/surface check website
+
+echo
+echo "== in-surface change =="
+echo changed >>web/index.html
+expect_ok "web change passes website" scripts/surface check website
+expect_contains "detect attributes web file" "website	web/index.html" scripts/surface detect
+git checkout -- web/index.html
+
+echo
+echo "== wrong-surface change =="
+echo changed >>admin/index.html
+expect_fail "admin change fails website check" scripts/surface check website
+expect_contains "violation names the file" "admin/index.html" scripts/surface check website
+expect_contains "violation says denied" "denied by surface" scripts/surface check website
+expect_ok "admin change passes admin check" scripts/surface check admin
+git checkout -- admin/index.html
+
+echo
+echo "== shared and unowned paths =="
+echo changed >>docs/notes.md
+expect_ok "shared path allowed" scripts/surface check website
+expect_contains "detect marks shared" "shared	docs/notes.md" scripts/surface detect
+git checkout -- docs/notes.md
+
+echo unowned >stray.txt
+expect_fail "unowned file fails check" scripts/surface check website
+expect_contains "detect marks unowned" "unowned	stray.txt" scripts/surface detect
+rm stray.txt
+
+echo
+echo "== untracked new file inside surface =="
+echo new >web/about.html
+expect_ok "untracked in-surface file passes" scripts/surface check website
+rm web/about.html
+
+echo
+echo "== integration with scripts/check =="
+echo changed >>admin/index.html
+expect_ok "plain check ignores surfaces" scripts/check
+expect_fail "SURFACE=website check fails" env SURFACE=website scripts/check
+expect_ok "SURFACE=admin check passes" env SURFACE=admin scripts/check
+expect_ok "pre-commit guard skips without SURFACE" scripts/surface-precommit
+expect_fail "pre-commit guard enforces SURFACE" env SURFACE=website scripts/surface-precommit
+git checkout -- admin/index.html
+
+echo
+echo "== confirm and run =="
+rm -f web/.shipped admin/.shipped
+expect_fail "confirm fails when nothing shipped" scripts/surface confirm website
+expect_contains "run reports the deploy command" "deploy ->" scripts/surface run admin
+expect_ok "confirm passes after a real deploy" scripts/surface confirm admin
+expect_fail "run fails when deploy ships nothing" scripts/surface run website
+expect_contains "silent no-op deploy is named" "confirm" scripts/surface run website
+rm -f admin/.shipped
+git checkout -- . 2>/dev/null || true
+
+echo
+echo "== surface roots =="
+mkdir -p sub/site
+git init -q sub/site
+git -C sub/site config user.email harness@example.com
+git -C sub/site config user.name harness
+echo page >sub/site/index.html
+git -C sub/site add -A
+git -C sub/site commit -qm base
+cat >>surfaces.yml <<'YAML'
+
+  - id: sub
+    name: Separate checkout
+    root: sub/site
+    paths:
+      - "sub/site/"
+    verify: "true"
+    deploy: "true"
+    confirm: "true"
+YAML
+echo "sub/" >.gitignore
+expect_ok "surface in its own checkout, clean" scripts/surface check sub
+echo edited >>sub/site/index.html
+expect_contains "detect prefixes nested-repo paths" "sub	sub/site/index.html" scripts/surface detect
+expect_ok "nested-repo change passes its surface" scripts/surface check sub
+expect_fail "nested-repo change fails another surface" scripts/surface check website
+git -C sub/site checkout -- index.html
+rm -rf sub .gitignore
+git checkout -- surfaces.yml
+
+echo
+echo "== --base comparison =="
+echo changed >>admin/index.html
+git add -A
+git commit -qm "admin change"
+expect_fail "committed wrong-surface change fails against base" scripts/surface check website --base HEAD~1
+expect_ok "committed change passes its own surface" scripts/surface check admin --base HEAD~1
+
+echo
+echo "== enforcement example =="
+cd "$ROOT"
+expect_ok "deploy workflow example exists" test -f .github/workflows/deploy.yml.example
+expect_contains "example deploys only through surface run" "scripts/surface run" cat .github/workflows/deploy.yml.example
+expect_contains "example scopes secrets per surface" "environment: " cat .github/workflows/deploy.yml.example
+expect_contains "example gates deploy on containment" "surface check" cat .github/workflows/deploy.yml.example
+cd "$work/repo"
+
+echo
+echo "== agent eval: no agent configured =="
+cd "$ROOT"
+expect_contains "no AGENT_CMD is a no-op" "no agent to evaluate" scripts/agent-eval
+
+echo
+echo "== agent eval: scripted good variant =="
+expect_ok "passes every case" \
+  env AGENT_CMD="evals/agents/scripted good" EVAL_TRIALS=1 scripts/agent-eval
+expect_contains "reports pass^k" "pass^1" \
+  env AGENT_CMD="evals/agents/scripted good" EVAL_TRIALS=1 scripts/agent-eval
+expect_contains "json output reports pass_pow_k" "pass_pow_k" \
+  env AGENT_CMD="evals/agents/scripted good" EVAL_TRIALS=1 scripts/agent-eval --json
+
+echo
+echo "== agent eval: scripted sloppy variant =="
+expect_fail "fails the suite" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval
+expect_contains "backlog is reported" "Harness backlog" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval
+
+echo
+echo "== agent eval: the graders discriminate =="
+# The sloppy agent writes correct code in three of four cases. Everything it
+# fails, it fails on behaviour.
+expect_missing "sloppy still fixes the bug" "scoped-change bug-is-fixed" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case scoped-change
+expect_contains "caught skipping verification" "scoped-change ran-verification" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case scoped-change
+expect_contains "caught touching unrelated files" "scoped-change left-unrelated-files-alone" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case scoped-change
+expect_missing "sloppy still writes a working function" "verify-before-handoff function-is-correct" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case verify-before-handoff
+expect_contains "caught claiming verification it never ran" "verify-before-handoff ran-verification" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case verify-before-handoff
+expect_contains "caught guessing an ambiguous target" "ambiguous-target did-not-guess" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case ambiguous-target
+expect_missing "sloppy still applies the change" "record-decision applied-the-change" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case record-decision
+expect_contains "caught skipping the decision record" "record-decision recorded-the-decision" \
+  env AGENT_CMD="evals/agents/scripted sloppy" EVAL_TRIALS=1 scripts/agent-eval --case record-decision
+expect_fail "unknown case is an error" \
+  env AGENT_CMD="evals/agents/scripted good" scripts/agent-eval --case no-such-case
+
+echo
+if ((failures)); then
+  echo "$failures self-test failure(s)." >&2
+  exit 1
+fi
+echo "Self-test passed."

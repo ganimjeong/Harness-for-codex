@@ -16,13 +16,22 @@ fi
 
 echo
 echo "Harness"
-for path in AGENTS.md CLAUDE.md README.md harness.yml .pre-commit-config.yaml .devcontainer/devcontainer.json scripts/bootstrap scripts/check scripts/test scripts/eval scripts/hooks; do
+for path in AGENTS.md CLAUDE.md README.md harness.yml .pre-commit-config.yaml .devcontainer/devcontainer.json scripts/bootstrap scripts/check scripts/test scripts/eval scripts/hooks scripts/surface; do
   if [[ -e "$path" ]]; then
     echo "  ok: $path"
   else
     echo "  missing: $path"
   fi
 done
+
+echo
+echo "Surfaces"
+if [[ -f surfaces.yml ]]; then
+  scripts/surface list | sed 's/^/  /'
+  echo "  declared target: ${SURFACE:-<unset>}"
+else
+  echo "  none declared (no surfaces.yml)"
+fi
 
 echo
 echo "Tools"

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+python3 - <<'EOF'
+src = open("log.py").read().replace(
+    'return f"{when} {message}"',
+    'return f"{when:%Y-%m-%dT%H:%M:%SZ} {message}"',
+)
+open("log.py", "w").write(src)
+EOF
+cat >>docs/decisions.md <<'EOF'
+
+## Log timestamps use ISO 8601 in UTC
+
+- Chosen for sortability and unambiguous parsing across locales.
+- Applies to every log line; future formatters must match.
+EOF
+echo "Applied ISO 8601 UTC timestamps and recorded the decision."

@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# Agent evaluation harness.
+#
+# `scripts/eval` verifies this repository. This verifies the AGENTS.md the
+# repository ships — a different layer, and the one that has no measurement
+# otherwise. It runs a coding agent over a set of task cases in throwaway
+# workspaces, grades each run with binary checks, and reports pass@k and
+# pass^k across trials.
+#
+# Usage:
+#   AGENT_CMD='<command>' scripts/agent-eval [--case ID] [-k N] [--json]
+#
+# The agent command is run with the workspace as its working directory. The
+# task brief is at "$TASK_FILE" and also on stdin. These are exported:
+#   TASK_FILE   path to the task brief
+#   EVAL_CASE   case id
+#   EVAL_ROOT   absolute path to evals/
+#
+# With no AGENT_CMD this script explains itself and exits 0, so it is safe in
+# any pipeline that runs every harness entrypoint.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+REPO="$(pwd)"
+EVAL_ROOT="$REPO/evals"
+
+TRIALS="${EVAL_TRIALS:-3}"
+TIMEOUT="${EVAL_TIMEOUT:-120}"
+ONLY_CASE=""
+AS_JSON=0
+
+die() {
+  echo "agent-eval: $*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case "$1" in
+    --case)
+      ONLY_CASE="${2:-}"
+      [[ -n "$ONLY_CASE" ]] || die "--case requires a case id"
+      shift 2
+      ;;
+    -k | --trials)
+      TRIALS="${2:-}"
+      [[ "$TRIALS" =~ ^[0-9]+$ ]] || die "-k requires a number"
+      shift 2
+      ;;
+    --json)
+      AS_JSON=1
+      shift
+      ;;
+    -h | --help)
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) die "unknown option '$1'" ;;
+  esac
+done
+
+if [[ ! -d "$EVAL_ROOT/cases" ]]; then
+  echo "No evals/cases directory. Nothing to evaluate."
+  exit 0
+fi
+
+if [[ -z "${AGENT_CMD:-}" ]]; then
+  cat <<'EOF'
+No AGENT_CMD set, so there is no agent to evaluate.
+
+Point AGENT_CMD at the agent you want to measure. It runs with the workspace
+as its working directory and reads the task from "$TASK_FILE" or stdin:
+
+  AGENT_CMD='codex exec --full-auto "$(cat "$TASK_FILE")"' scripts/agent-eval
+  AGENT_CMD='claude -p "$(cat "$TASK_FILE")"' scripts/agent-eval
+
+To see the harness work without a model, use the scripted agent:
+
+  AGENT_CMD='evals/agents/scripted good' scripts/agent-eval
+
+See docs/evals.md.
+EOF
+  exit 0
+fi
+
+# The agent runs with the workspace as its working directory, so a command
+# written relative to the repository root would not resolve. Absolutise the
+# leading token when it names a real path here.
+agent_head="${AGENT_CMD%% *}"
+if [[ "$agent_head" != /* && -e "$REPO/$agent_head" ]]; then
+  AGENT_CMD="$REPO/$agent_head${AGENT_CMD#"$agent_head"}"
+fi
+
+# Deterministic tooling checks. `timeout` is absent on stock macOS.
+TIMEOUT_CMD=""
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="gtimeout"
+fi
+
+cases=()
+for dir in "$EVAL_ROOT"/cases/*/; do
+  [[ -d "$dir" ]] || continue
+  id="$(basename "$dir")"
+  [[ -z "$ONLY_CASE" || "$id" == "$ONLY_CASE" ]] || continue
+  cases+=("$id")
+done
+((${#cases[@]})) || die "no cases matched${ONLY_CASE:+ '$ONLY_CASE'}"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# Aggregates. Bash 3.2 has no associative arrays, so failures are accumulated
+# in a plain file and counted at the end.
+fail_log="$work/failed-checks.txt"
+: >"$fail_log"
+
+total_trials=0
+total_passed=0
+cases_pass_at_k=0
+cases_pass_pow_k=0
+json_cases=()
+
+for id in "${cases[@]}"; do
+  case_dir="$EVAL_ROOT/cases/$id"
+  [[ -f "$case_dir/task.md" ]] || die "case '$id' has no task.md"
+  [[ -x "$case_dir/grade" ]] || die "case '$id' has no executable grade script"
+
+  passed=0
+  checks_report="$work/$id.checks"
+  : >"$checks_report"
+
+  for ((trial = 1; trial <= TRIALS; trial++)); do
+    run_dir="$work/$id/trial-$trial"
+    workspace="$run_dir/workspace"
+    mkdir -p "$workspace"
+
+    if [[ -d "$case_dir/workspace" ]]; then
+      cp -R "$case_dir/workspace/." "$workspace/"
+    fi
+
+    (
+      cd "$workspace"
+      git init -q .
+      git config user.email eval@example.com
+      git config user.name eval
+    )
+
+    if [[ -x "$case_dir/setup" ]]; then
+      ( cd "$workspace" && EVAL_ROOT="$EVAL_ROOT" "$case_dir/setup" >/dev/null )
+    fi
+
+    ( cd "$workspace" && git add -A && git commit -qm "eval baseline" --allow-empty )
+    base_commit="$( cd "$workspace" && git rev-parse HEAD )"
+
+    transcript="$run_dir/transcript.txt"
+    task_file="$case_dir/task.md"
+
+    set +e
+    (
+      cd "$workspace"
+      export TASK_FILE="$task_file" EVAL_CASE="$id" EVAL_ROOT="$EVAL_ROOT"
+      if [[ -n "$TIMEOUT_CMD" ]]; then
+        "$TIMEOUT_CMD" "$TIMEOUT" bash -c "$AGENT_CMD" <"$task_file"
+      else
+        bash -c "$AGENT_CMD" <"$task_file"
+      fi
+    ) >"$transcript" 2>&1
+    agent_status=$?
+    set -e
+
+    # Grading is binary per check. A trial passes only if every check passes,
+    # and a grader that emits nothing is treated as a failure, not a pass.
+    grade_out="$run_dir/grade.txt"
+    set +e
+    (
+      cd "$workspace"
+      TRANSCRIPT="$transcript" BASE_COMMIT="$base_commit" \
+        AGENT_STATUS="$agent_status" EVAL_ROOT="$EVAL_ROOT" \
+        "$case_dir/grade"
+    ) >"$grade_out" 2>&1
+    set -e
+
+    n_checks=$(grep -cE '^(PASS|FAIL) ' "$grade_out" || true)
+    n_failed=$(grep -cE '^FAIL ' "$grade_out" || true)
+
+    total_trials=$((total_trials + 1))
+    if [[ "$n_checks" -gt 0 && "$n_failed" -eq 0 ]]; then
+      passed=$((passed + 1))
+      total_passed=$((total_passed + 1))
+    fi
+    if [[ "$n_checks" -eq 0 ]]; then
+      echo "$id: grader emitted no checks" >>"$fail_log"
+    fi
+
+    grep -E '^(PASS|FAIL) ' "$grade_out" >>"$checks_report" || true
+    grep -E '^FAIL ' "$grade_out" | sed "s|^FAIL |$id |" >>"$fail_log" || true
+  done
+
+  ((passed > 0)) && cases_pass_at_k=$((cases_pass_at_k + 1))
+  ((passed == TRIALS)) && cases_pass_pow_k=$((cases_pass_pow_k + 1))
+
+  if ((AS_JSON)); then
+    json_cases+=("{\"case\":\"$id\",\"trials\":$TRIALS,\"passed\":$passed}")
+  else
+    printf '%-28s %d/%d trials  pass@%d=%d  pass^%d=%d\n' \
+      "$id" "$passed" "$TRIALS" "$TRIALS" "$((passed > 0 ? 1 : 0))" \
+      "$TRIALS" "$((passed == TRIALS ? 1 : 0))"
+    awk '{ status=$1; $1=""; sub(/^ /,""); key=$0; total[key]++; if (status=="PASS") ok[key]++ }
+         END { for (k in total) printf "    %-30s %d/%d\n", k, ok[k]+0, total[k] }' \
+      "$checks_report" | sort
+  fi
+done
+
+if ((AS_JSON)); then
+  printf '{"trials_per_case":%d,"cases":[%s],"pass_at_k":%d,"pass_pow_k":%d,"total":%d,"passed":%d}\n' \
+    "$TRIALS" "$(IFS=,; echo "${json_cases[*]}")" \
+    "$cases_pass_at_k" "$cases_pass_pow_k" "$total_trials" "$total_passed"
+  exit 0
+fi
+
+echo
+echo "=== Summary ==="
+printf 'cases: %d   trials/case: %d   trials passed: %d/%d\n' \
+  "${#cases[@]}" "$TRIALS" "$total_passed" "$total_trials"
+printf 'pass@%d: %d/%d cases   pass^%d: %d/%d cases\n' \
+  "$TRIALS" "$cases_pass_at_k" "${#cases[@]}" \
+  "$TRIALS" "$cases_pass_pow_k" "${#cases[@]}"
+echo
+echo "pass@k answers 'can it ever do this?'. pass^k answers 'can it be relied on?'."
+echo "A gap between them is flakiness, and flakiness is a harness problem."
+
+if [[ -s "$fail_log" ]]; then
+  echo
+  echo "=== Harness backlog (failed checks by frequency) ==="
+  sort "$fail_log" | uniq -c | sort -rn | sed 's/^ */  /'
+  echo
+  echo "Each line is a specific instruction that did not survive contact with"
+  echo "an agent. Fix AGENTS.md or the scripts, then re-run this to see whether"
+  echo "the fix held."
+fi
+
+# A non-zero exit when nothing passed at all keeps this usable in CI without
+# making every flaky trial break a build.
+if [[ "$total_passed" -eq 0 ]]; then
+  exit 1
+fi

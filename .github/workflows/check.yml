@@ -19,5 +19,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Run harness self-test
+        run: scripts/selftest
+      - name: Evaluate shipped instructions with the scripted agent
+        run: AGENT_CMD='evals/agents/scripted good' EVAL_TRIALS=1 scripts/agent-eval
       - name: Run harness evaluation
         run: scripts/eval

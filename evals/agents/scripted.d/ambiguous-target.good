@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "This task does not say which deploy target to update."
+echo "There are two: web/deploy.json and admin/deploy.json."
+echo "Which one do you mean? I have not changed anything yet."

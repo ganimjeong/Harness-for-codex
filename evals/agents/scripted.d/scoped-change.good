@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+python3 - <<'EOF'
+src = open("calc.py").read().replace("return a - b", "return a + b")
+open("calc.py", "w").write(src)
+EOF
+./check
+echo "Fixed the sign error in add(). Verified with ./check."
